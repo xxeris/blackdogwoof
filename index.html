@@ -433,7 +433,6 @@
         o.passed = true;
         if (o.type === 'bird') {
           st.birdSkipped++;
-          if (dogName === '高藝晟' && g.score > 1000) { startEnding('parrot'); return; }
         } else {
           st.kidSkipped++;
           if (dogName === '林奕丞' && st.kidScared >= 10) { startEnding('adopt', { kidX: o.x }); return; }
@@ -462,6 +461,14 @@
           if (o.first && g.firstBullet === 'jump' && dogName === '賴冠宇') { startEnding('bullets'); return; }
         }
       }
+    }
+    // 高藝晟:超過 1000 分後,畫面上第一隻鳥飛到狗頭上方時沒被吠 → 立刻觸發
+    if (dogName === '高藝晟' && g.score > 1000) {
+      if (!g.parrotTarget || g.parrotTarget.scared) {
+        g.parrotTarget = g.obs.filter(o => o.type === 'bird' && !o.scared && o.x < W && o.x + o.w > DOG_X + 40)
+          .sort((a, b) => a.x - b.x)[0] || null;
+      }
+      if (g.parrotTarget && !g.parrotTarget.scared && g.parrotTarget.x < DOG_X + 40) { startEnding('parrot'); return; }
     }
     if (dogName === '林鼎勳' && st.kidSkipped >= 10 && g.score > 2000) { startEnding('concert'); return; }
     g.obs = g.obs.filter(o => o.x > -80 && o.x < W + 200 && o.y > -50 && !o.eaten);
