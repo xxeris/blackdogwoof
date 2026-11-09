@@ -239,10 +239,16 @@
       dogY: 0, vy: 0, duck: false, bark: 0, barkText: '',
       obs: [], pops: [], nextSpawn: 60, lastDanger: -999,
       groundOff: 0,
+      // 隱藏結局用的統計
+      st: { kidScared: 0, birdScared: 0, bulletDodged: 0, trapJumped: 0, kidSkipped: 0, birdSkipped: 0 },
+      firstBullet: null,  // 第一顆子彈是 'jump' 還是 'other'
+      seq: [],            // 劉祐維的按鍵順序
+      skunk: false, potatoOut: false, potatoNext: 0,
     };
   }
 
   // ---------- 輸入 ----------
+  const SEQ_CODE = { KeyW: 'U', Space: 'J', KeyS: 'D', ShiftLeft: 'C', ShiftRight: 'C' };
   function press(code) {
     if (keys[code]) return; // 避免長按重複觸發
     keys[code] = true;
@@ -250,6 +256,16 @@
       if (code === 'KeyW') bark('sky');
       if (code === 'KeyS') bark('ground');
       if (code === 'Space' && g.dogY === 0) { g.vy = -12.5; sfx.jump(); }
+      if (mode === 'play' && dogName === '劉祐維' && SEQ_CODE[code]) {
+        // 分數高於 1440 後:上吠、跳、下吠、蹲、任意吠三次
+        if (g.score > 1440) {
+          g.seq.push(SEQ_CODE[code]);
+          if (g.seq.length > 7) g.seq.shift();
+          if (/^UJDC[UD]{3}$/.test(g.seq.join(''))) startEnding('samurai');
+        } else g.seq = [];
+      }
+    } else if (mode === 'egg' && code === 'Space') {
+      eggJump();
     } else if (mode === 'over' && code === 'Enter') {
       startPlay();
     }
@@ -316,6 +332,7 @@
       .sort((a, b) => a.x - b.x)[0];
     if (target) {
       target.scared = true;
+      if (target.type === 'bird') g.st.birdScared++; else g.st.kidScared++;
       addScore(50, target.x, target.y - 30, where === 'sky' ? '+50 嚇跑鳥!' : '+50 嚇跑小孩!');
     }
   }
@@ -387,6 +404,14 @@
       g.nextSpawn = (55 + Math.random() * 70) * (6 / g.speed) + 20;
     }
 
+    // 李皓哲:吠走小孩、鳥,躲過子彈、夾子各一次後出現地瓜
+    const st = g.st;
+    if (dogName === '李皓哲' && !g.skunk && !g.potatoOut && g.t > g.potatoNext &&
+        st.kidScared && st.birdScared && st.bulletDodged && st.trapJumped) {
+      g.potatoOut = true;
+      g.obs.push({ type: 'potato', x: W + 30, y: GROUND - 14, w: 30, h: 18, scared: false, passed: false, ph: 0 });
+    }
+
     const box = dogBox();
     for (const o of g.obs) {
       o.ph += 0.25 * dt;
@@ -395,19 +420,52 @@
       else if (o.scared && o.type === 'kid') { o.x += 3 * dt; }
       else o.x -= sp * dt;
 
+      if (o.type === 'potato' && !o.eaten) {
+        if (box.x1 < o.x + o.w && box.x2 > o.x && box.y1 < o.y && box.y2 > o.y - o.h) {
+          o.eaten = true; g.skunk = true;
+          addScore(0, DOG_X + 10, GROUND - 90, '吃了地瓜…變成臭鼬了!');
+          tone(160, 60, 0.5, 'sawtooth', 0.12);
+        }
+      }
+
+      // 略過沒吠的鳥/小孩
+      if ((o.type === 'bird' || o.type === 'kid') && !o.scared && !o.passed && o.x + o.w < DOG_X + 10) {
+        o.passed = true;
+        if (o.type === 'bird') {
+          st.birdSkipped++;
+          if (dogName === '高藝晟' && g.score === 1000) { startEnding('parrot'); return; }
+        } else {
+          st.kidSkipped++;
+          if (dogName === '林奕丞' && st.kidScared >= 10) { startEnding('adopt', { kidX: o.x }); return; }
+        }
+      }
+
       if (o.type === 'bullet' || o.type === 'trap') {
         const ox1 = o.x, ox2 = o.x + o.w, oy1 = o.y - (o.type === 'trap' ? o.h : 0), oy2 = o.type === 'trap' ? o.y : o.y + o.h;
         if (box.x1 < ox2 && box.x2 > ox1 && box.y1 < oy2 && box.y2 > oy1) {
+          if (o.type === 'trap') {
+            if (dogName === '陳柏廷' && st.bulletDodged >= 5 && st.kidScared >= 5 && st.birdScared >= 5) { startEnding('angel'); return; }
+            if (dogName === '李皓哲' && g.skunk) { startEnding('skunk'); return; }
+          }
           gameOver(o.type === 'bullet' ? `被子彈打中了…下次記得${LABEL.duck}!` : `踩到捕獸夾了…下次記得${LABEL.jump}!`);
           return;
         }
+        // 第一顆子彈經過狗身上時,記錄狗是不是在空中
+        if (o.type === 'bullet' && g.firstBullet === null && box.x1 < ox2 && box.x2 > ox1) {
+          g.firstBullet = g.dogY < 0 ? 'jump' : 'other';
+          o.first = true;
+        }
         if (!o.passed && ox2 < box.x1) {
           o.passed = true;
+          if (o.type === 'bullet') st.bulletDodged++; else st.trapJumped++;
           addScore(100, DOG_X + 30, GROUND - 80, o.type === 'bullet' ? '+100 閃過子彈!' : '+100 跳過夾子!');
+          if (o.first && g.firstBullet === 'jump' && dogName === '賴冠宇') { startEnding('bullets'); return; }
         }
       }
     }
-    g.obs = g.obs.filter(o => o.x > -80 && o.x < W + 200 && o.y > -50);
+    if (dogName === '林鼎勳' && st.kidSkipped >= 10 && g.score > 2000) { startEnding('concert'); return; }
+    g.obs = g.obs.filter(o => o.x > -80 && o.x < W + 200 && o.y > -50 && !o.eaten);
+    if (g.potatoOut && !g.skunk && !g.obs.some(o => o.type === 'potato')) { g.potatoOut = false; g.potatoNext = g.t + 600; }
     for (const p of g.pops) { p.life -= dt; p.y -= 0.8 * dt; }
     g.pops = g.pops.filter(p => p.life > 0);
   }
@@ -446,26 +504,75 @@
     }
   }
 
-  function drawDog(x, y, { duck = false, phase = 0, barking = false, flat = 0, name = '' } = {}) {
+  function drawSkunkTail(x, y, rot) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.fillStyle = '#151515'; ctx.beginPath(); ctx.ellipse(0, -14, 12, 24, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(0, -14, 4, 18, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#151515';
+  }
+  // 以下配件都畫在狗的區域座標(頭在 68,-42)
+  function drawShades() {
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.roundRect(63, -51, 11, 8, 2); ctx.roundRect(76, -51, 11, 8, 2); ctx.fill();
+    ctx.fillRect(58, -50, 30, 2);
+    ctx.fillStyle = '#fff'; ctx.fillRect(65, -49, 3, 2); ctx.fillRect(78, -49, 3, 2);
+  }
+  function drawKabuto() {
+    ctx.fillStyle = '#7a1616';
+    ctx.beginPath(); ctx.moveTo(57, -50); ctx.lineTo(42, -30); ctx.lineTo(62, -33); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.arc(68, -47, 15, Math.PI, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#4e0d0d'; ctx.fillRect(51, -49, 36, 4);
+    ctx.strokeStyle = '#e3b341'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(71, -58); ctx.quadraticCurveTo(64, -72, 58, -80);
+    ctx.moveTo(75, -58); ctx.quadraticCurveTo(84, -72, 90, -80);
+    ctx.stroke();
+    ctx.fillStyle = '#e3b341'; ctx.beginPath(); ctx.arc(73, -58, 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+  function drawCrown() {
+    ctx.fillStyle = '#f2c230';
+    ctx.beginPath(); ctx.moveTo(57, -53); ctx.lineTo(57, -67); ctx.lineTo(62, -60); ctx.lineTo(67, -72);
+    ctx.lineTo(72, -60); ctx.lineTo(77, -67); ctx.lineTo(77, -53); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#d22'; ctx.beginPath(); ctx.arc(67, -58, 2.5, 0, Math.PI * 2); ctx.fill();
+  }
+  function drawBaseball(x, y) {
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#d33'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(x - 7, y, 5, -0.8, 0.8); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x + 7, y, 5, Math.PI - 0.8, Math.PI + 0.8); ctx.stroke();
+  }
+
+  function drawDog(x, y, { duck = false, phase = 0, barking = false, flat = 0, name = '', skunk = false, shades = false,
+                          kabuto = false, halo = false, crown = false, ball = false, old = false, barkColor = '#222' } = {}) {
     ctx.save();
     ctx.translate(x, y);
     if (flat > 0) { ctx.translate(0, 0); ctx.scale(1 + flat * 0.4, 1 - flat * 0.88); }
     ctx.fillStyle = '#151515';
     const leg = Math.sin(phase) * 5;
     if (duck) {
+      if (skunk) drawSkunkTail(-2, -14, -1.15);
       ctx.beginPath(); ctx.ellipse(36, -12, 34, 10, 0, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.ellipse(70, -14, 13, 10, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillRect(74, -16, 16, 8);
       ctx.beginPath(); ctx.moveTo(62, -22); ctx.lineTo(56, -14); ctx.lineTo(66, -16); ctx.fill(); // 貼平的耳朵
       ctx.fillRect(14, -6, 10, 6); ctx.fillRect(50, -6, 10, 6);
-      ctx.strokeStyle = '#151515'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(4, -12); ctx.lineTo(-10, -10); ctx.stroke();
+      if (!skunk) {
+        ctx.strokeStyle = '#151515'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(4, -12); ctx.lineTo(-10, -10); ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(72, -23); ctx.quadraticCurveTo(40, -25, 6, -18); ctx.stroke();
+      }
+      if (old) { ctx.fillStyle = '#8a8a8a'; ctx.fillRect(76, -16, 14, 8); }
       ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(73, -17, 2, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#d33'; ctx.fillRect(60, -12, 4, 8);
     } else {
       // 尾巴
       ctx.strokeStyle = '#151515'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(10, -32); ctx.quadraticCurveTo(-4, -40, -6 + Math.sin(phase * 2) * 3, -54); ctx.stroke();
+      if (skunk) drawSkunkTail(8, -36, -0.45 + Math.sin(phase * 2) * 0.08);
+      else { ctx.beginPath(); ctx.moveTo(10, -32); ctx.quadraticCurveTo(-4, -40, -6 + Math.sin(phase * 2) * 3, -54); ctx.stroke(); }
       // 腿
       ctx.fillRect(14 + leg, -18, 8, 18); ctx.fillRect(24 - leg, -18, 8, 18);
       ctx.fillRect(50 - leg, -18, 8, 18); ctx.fillRect(58 + leg, -18, 8, 18);
@@ -482,13 +589,26 @@
       ctx.fillStyle = '#555'; ctx.fillRect(85, -45, 4, 4);
       ctx.fillStyle = '#d33'; ctx.fillRect(56, -38, 6, 12);
       ctx.fillStyle = '#f5c542'; ctx.beginPath(); ctx.arc(60, -25, 3, 0, Math.PI * 2); ctx.fill();
+      if (skunk) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(67, -55); ctx.quadraticCurveTo(40, -46, 12, -38); ctx.stroke();
+      }
+      if (old) { ctx.fillStyle = '#8a8a8a'; ctx.fillRect(77, -44, 11, barking ? 6 : 10); ctx.fillRect(66, -52, 8, 3); }
+      if (shades) drawShades();
+      if (kabuto) drawKabuto();
+      if (crown) drawCrown();
+      if (ball) drawBaseball(93, -39);
+      if (halo) {
+        ctx.strokeStyle = '#f5c542'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(66, -66, 13, 4, 0, 0, Math.PI * 2); ctx.stroke();
+      }
     }
     ctx.restore();
 
     if (barking && !flat) {
       ctx.save();
       ctx.font = 'bold 20px "Microsoft JhengHei", sans-serif';
-      ctx.fillStyle = '#222';
+      ctx.fillStyle = barkColor;
       ctx.fillText('汪!汪!', x + 92, y + (duck ? -18 : -54));
       ctx.restore();
     }
@@ -522,7 +642,7 @@
     const step = Math.sin(o.ph) * 4;
     ctx.fillStyle = '#334';
     ctx.fillRect(4 + step, -16, 6, 16); ctx.fillRect(14 - step, -16, 6, 16);
-    ctx.fillStyle = o.scared ? '#e06060' : '#3aa36b';
+    ctx.fillStyle = o.shirt || (o.scared ? '#e06060' : '#3aa36b');
     ctx.fillRect(2, -36, 20, 22);
     ctx.fillStyle = '#f2c9a0';
     ctx.beginPath(); ctx.arc(12, -44, 9, 0, Math.PI * 2); ctx.fill();
@@ -534,8 +654,21 @@
       ctx.fillStyle = '#d33'; ctx.font = 'bold 13px "Microsoft JhengHei", sans-serif'; ctx.fillText('哇~', 20, -58);
     } else {
       ctx.fillRect(6, -46, 2.5, 2.5); ctx.fillRect(11, -46, 2.5, 2.5);
-      ctx.fillStyle = '#bbb'; ctx.font = 'bold 12px sans-serif'; ctx.fillText(LABEL.kid, 8, -60);
+      if (!o.noLabel) { ctx.fillStyle = '#bbb'; ctx.font = 'bold 12px sans-serif'; ctx.fillText(LABEL.kid, 8, -60); }
     }
+    ctx.restore();
+  }
+
+  function drawPotato(o) {
+    ctx.save(); ctx.translate(o.x, o.y);
+    ctx.rotate(Math.sin(o.ph * 0.5) * 0.15);
+    ctx.fillStyle = '#9b3f6b';
+    ctx.beginPath(); ctx.ellipse(15, -8, 16, 8, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2b544';
+    ctx.beginPath(); ctx.ellipse(28, -11, 4, 5, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#6e2a4b'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(6, -10); ctx.lineTo(10, -8); ctx.moveTo(14, -4); ctx.lineTo(18, -3); ctx.stroke();
+    ctx.fillStyle = '#bbb'; ctx.font = 'bold 11px "Microsoft JhengHei", sans-serif'; ctx.fillText('地瓜', 3, -22);
     ctx.restore();
   }
 
@@ -592,9 +725,10 @@
       if (o.type === 'bird') drawBird(o);
       else if (o.type === 'kid') drawKid(o);
       else if (o.type === 'trap') drawTrap(o);
+      else if (o.type === 'potato') drawPotato(o);
     }
     drawDog(DOG_X, GROUND + g.dogY, {
-      duck: g.duck, phase: g.dogY === 0 && mode === 'play' ? g.t * 0.45 : 0, barking: g.bark > 0,
+      duck: g.duck, phase: g.dogY === 0 && mode === 'play' ? g.t * 0.45 : 0, barking: g.bark > 0, skunk: g.skunk,
     });
     for (const o of g.obs) if (o.type === 'bullet') drawBullet(o);
     drawHUD();
@@ -604,7 +738,16 @@
   let egg;
   function startEgg() {
     mode = 'egg';
-    egg = { t: 0, dogX: -100, carX: W + 260, flat: 0, honked: false, crashed: false, fading: false };
+    egg = { t: 0, dogX: -100, carX: W + 260, flat: 0, honked: false, crashed: false, fading: false,
+            jumps: 0, saved: false, dogY: 0, vy: 0, grav: 0.6, launched: false, launchT: 0, apex: 0, caught: false, landT: 0 };
+  }
+
+  // 姜博凱:車撞上之前按滿 5 次跳躍,就會跳過汽車
+  function eggJump() {
+    const e = egg;
+    if (e.crashed || e.launched) return;
+    if (!e.saved && ++e.jumps >= 5) { e.saved = true; sfx.point(); }
+    if (e.dogY === 0) { e.vy = -6; e.grav = 0.6; sfx.jump(); }
   }
 
   function updateEgg(dt) {
@@ -613,7 +756,18 @@
     if (e.t < 90) e.dogX = Math.min(W / 2 - 45, e.dogX + 5 * dt);   // 狗走進來
     if (e.t > 110 && !e.honked) { e.honked = true; sfx.horn(); }      // 喇叭
     if (e.t > 140) e.carX -= 22 * dt;                                 // 車衝過來
-    if (!e.crashed && e.carX < e.dogX + 70) { e.crashed = true; sfx.crash(); }
+    if (e.saved && !e.launched && e.t > 140 && e.carX - (e.dogX + 70) < 270) {
+      e.launched = true; e.launchT = e.t; e.vy = -11.5; e.grav = 0.45;
+      e.apex = e.dogY - (11.5 * 11.5) / (2 * 0.45);
+      sfx.jump(); tone(400, 900, 0.3, 'square', 0.08);
+    }
+    if (e.dogY < 0 || e.vy < 0) {
+      e.vy += e.grav * dt; e.dogY += e.vy * dt;
+      if (e.dogY >= 0) { e.dogY = 0; e.vy = 0; if (e.caught && !e.landT) e.landT = e.t; }
+    }
+    if (e.launched && !e.caught && e.t - e.launchT >= 25) { e.caught = true; sfx.point(); tone(1200, 1600, 0.15, 'triangle', 0.1, 0.1); }
+    if (e.landT && e.t - e.landT > 70) { startEnding('mlb'); return; }
+    if (!e.saved && !e.crashed && e.carX < e.dogX + 70) { e.crashed = true; sfx.crash(); }
     if (e.crashed) e.flat = Math.min(1, e.flat + 0.25 * dt);
     if (e.crashed && e.carX < -400 && !e.fading) {
       e.fading = true;
@@ -644,8 +798,14 @@
     const e = egg;
     drawBackground(0);
     const walking = e.t < 90;
-    drawDog(e.dogX, GROUND, { phase: walking ? e.t * 0.4 : 0, flat: e.flat, name: dogName, barking: !e.crashed && e.t > 100 && e.t < 130 });
-    if (!e.crashed && e.t > 110) {
+    drawDog(e.dogX, GROUND + e.dogY, { phase: walking ? e.t * 0.4 : 0, flat: e.flat, name: dogName, ball: e.caught,
+      barking: !e.crashed && !e.caught && e.t > 100 && e.t < 130 });
+    if (e.launched && !e.caught) {
+      const p = Math.min(1, (e.t - e.launchT) / 25);
+      ctx.save(); drawBaseball(lerp(W + 20, e.dogX + 93, p), lerp(GROUND - 230, GROUND + e.apex - 39, p) - Math.sin(p * Math.PI) * 30); ctx.restore();
+    }
+    if (e.caught) txt('咬到了一顆棒球!', W / 2, capY(), 22, '#d9822b', { stroke: '#fff' });
+    if (!e.crashed && e.t > 110 && e.carX > e.dogX) {
       ctx.save(); ctx.font = 'bold 22px "Microsoft JhengHei", sans-serif'; ctx.fillStyle = '#d33';
       ctx.fillText('叭叭——!', W - 160, GROUND - 120); ctx.restore();
     }
@@ -666,6 +826,700 @@
     }
   }
 
+  // =====================================================================
+  // ---------- 隱藏結局 ----------
+  // =====================================================================
+  const FONT = '"Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif';
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const clamp01 = p => Math.max(0, Math.min(1, p));
+  const prog = (t, a, b) => clamp01((t - a) / (b - a));
+  const ease = p => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
+  const capY = () => GROUND + 32;                                  // 字幕放在地面下的土地區
+  const cardY = () => Math.max(70 + safe.t, GROUND * 0.38);
+
+  // 文字超出寬度時自動縮小
+  function txt(s, x, y, size, color = '#222', o = {}) {
+    const maxW = o.maxW || W - 32 - safe.l - safe.r;
+    ctx.save();
+    const weight = o.weight || 'bold', fam = o.family || FONT;
+    ctx.font = `${weight} ${size}px ${fam}`;
+    const w = ctx.measureText(s).width;
+    if (w > maxW) ctx.font = `${weight} ${Math.max(9, size * maxW / w)}px ${fam}`;
+    ctx.textAlign = o.align || 'center';
+    if (o.alpha != null) ctx.globalAlpha = o.alpha;
+    if (o.glow) { ctx.shadowColor = o.glow; ctx.shadowBlur = 16; }
+    if (o.stroke) { ctx.lineJoin = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = o.stroke; ctx.strokeText(s, x, y); }
+    ctx.fillStyle = color; ctx.fillText(s, x, y);
+    ctx.restore();
+  }
+  const caption = (s, a = 1) => txt(s, W / 2, capY(), 20, '#222', { stroke: '#fff', alpha: a });
+
+  function bubble(s, x, y, size = 13) {
+    ctx.save();
+    ctx.font = `bold ${size}px ${FONT}`;
+    const w = ctx.measureText(s).width + 14, h = size + 12;
+    const bx = Math.max(4, Math.min(W - w - 4, x - w / 2));
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(bx, y - h, w, h, 8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 4, y - 1); ctx.lineTo(x + 4, y - 1); ctx.lineTo(x, y + 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.textAlign = 'center'; ctx.fillText(s, bx + w / 2, y - 7);
+    ctx.restore();
+  }
+
+  function drawHeart(x, y, s, color = '#ff5d7a', a = 1) {
+    ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(x, y + s * 0.3);
+    ctx.bezierCurveTo(x, y, x - s * 0.5, y, x - s * 0.5, y + s * 0.3);
+    ctx.bezierCurveTo(x - s * 0.5, y + s * 0.6, x, y + s * 0.8, x, y + s);
+    ctx.bezierCurveTo(x, y + s * 0.8, x + s * 0.5, y + s * 0.6, x + s * 0.5, y + s * 0.3);
+    ctx.bezierCurveTo(x + s * 0.5, y, x, y, x, y + s * 0.3);
+    ctx.fill(); ctx.restore();
+  }
+  function cloud(x, y, s = 1, color = '#fff') {
+    ctx.fillStyle = color; ctx.beginPath();
+    ctx.ellipse(x, y, 34 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x + 20 * s, y - 8 * s, 20 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x - 16 * s, y - 4 * s, 16 * s, 10 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function fillSky(stops) {
+    const gr = ctx.createLinearGradient(0, 0, 0, GROUND);
+    stops.forEach(([o, c]) => gr.addColorStop(o, c));
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+  }
+  function plainGround(y, color = '#f6f1e7') {
+    ctx.fillStyle = color; ctx.fillRect(0, y + 1, W, H - y + 10);
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, y + 1); ctx.lineTo(W, y + 1); ctx.stroke();
+  }
+  function blackout(a) { if (a > 0) { ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore(); } }
+  function person(x, s, shirt, ph = 0) {
+    ctx.save(); ctx.translate(x, GROUND); ctx.scale(s, s);
+    drawKid({ x: 0, y: 0, ph, scared: false, noLabel: true, shirt });
+    ctx.restore();
+  }
+  function drawClosedTrap(x, y) {
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = '#666'; ctx.fillRect(0, -4, 44, 4);
+    ctx.fillStyle = '#888';
+    ctx.beginPath(); ctx.moveTo(6, -4); for (let i = 0; i <= 5; i++) ctx.lineTo(8 + i * 6, i % 2 ? -18 : -12); ctx.lineTo(40, -4); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawParrot(x, y, ph, c, s = 1) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    const flap = Math.sin(ph) * 12;
+    ctx.fillStyle = c[2]; ctx.beginPath(); ctx.moveTo(16, 2); ctx.lineTo(40, 16); ctx.lineTo(36, 4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = c[0];
+    ctx.beginPath(); ctx.ellipse(10, 0, 15, 9, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4, -6, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f3d35a';
+    ctx.beginPath(); ctx.moveTo(-10, -9); ctx.quadraticCurveTo(-19, -5, -12, 1); ctx.lineTo(-10, -4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-5, -8, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(-5.5, -8, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = c[1]; ctx.beginPath(); ctx.moveTo(4, -2); ctx.lineTo(24, -10 - flap); ctx.lineTo(22, 3); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  const PARROT_C = [['#2fb34a', '#e8352b', '#2a6fdb'], ['#e8352b', '#2a6fdb', '#f3c33a'],
+                    ['#2a6fdb', '#f3c33a', '#2fb34a'], ['#f3c33a', '#2fb34a', '#e8352b']];
+
+  function drawRainbow(cx, cy, R, a) {
+    const cols = ['#e8352b', '#f39a2b', '#f3d33a', '#4cbf4a', '#3a8fe0', '#4b5bd6', '#8a4fd1'];
+    const bw = R * 0.055;
+    ctx.save(); ctx.globalAlpha = a; ctx.lineWidth = bw + 1;
+    cols.forEach((c, i) => { ctx.strokeStyle = c; ctx.beginPath(); ctx.arc(cx, cy, R - i * bw, Math.PI, 0); ctx.stroke(); });
+    ctx.restore();
+  }
+
+  function drawAngel(x, y, ph) {
+    ctx.save(); ctx.translate(x, y);
+    const f = Math.sin(ph) * 0.35;
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#cfcfcf'; ctx.lineWidth = 2;
+    for (const s of [-1, 1]) {
+      ctx.save(); ctx.scale(s, 1); ctx.rotate(-0.25 - f);
+      ctx.beginPath(); ctx.ellipse(26, -14, 30, 12, -0.45, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.fillStyle = '#fffdf3';
+    ctx.beginPath(); ctx.moveTo(-10, -20); ctx.lineTo(10, -20); ctx.lineTo(19, 30); ctx.lineTo(-19, 30); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#f2d2b6'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-8, -12); ctx.lineTo(-16, 16); ctx.moveTo(8, -12); ctx.lineTo(16, 16); ctx.stroke();
+    ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(0, -31, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2cf5b'; ctx.beginPath(); ctx.arc(0, -33, 10.5, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(-4, -30, 2, 0.2, Math.PI - 0.2); ctx.arc(4, -30, 2, 0.2, Math.PI - 0.2); ctx.stroke();
+    ctx.strokeStyle = '#f5c542'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(0, -48, 12, 4, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 水手服、黑長髮的歌手(原點在腳底)
+  function drawSinger(x, y, ph) {
+    ctx.save(); ctx.translate(x, y);
+    const sway = Math.sin(ph) * 3;
+    ctx.fillStyle = '#0d0d0d';
+    ctx.beginPath(); ctx.moveTo(-13, -104); ctx.quadraticCurveTo(-19, -72, -15 + sway, -50);
+    ctx.lineTo(15 + sway, -50); ctx.quadraticCurveTo(19, -72, 13, -104); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#f2d2b6'; ctx.fillRect(-8, -30, 6, 24); ctx.fillRect(2, -30, 6, 24);
+    ctx.fillStyle = '#1f2a55'; ctx.fillRect(-8, -15, 6, 11); ctx.fillRect(2, -15, 6, 11);
+    ctx.fillStyle = '#111'; ctx.fillRect(-10, -4, 9, 4); ctx.fillRect(1, -4, 9, 4);
+    ctx.fillStyle = '#1f2a55';
+    ctx.beginPath(); ctx.moveTo(-11, -55); ctx.lineTo(11, -55); ctx.lineTo(17 + sway * 0.5, -28); ctx.lineTo(-17 + sway * 0.5, -28); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#3a4a8a'; ctx.lineWidth = 1;
+    for (const px of [-8, -3, 2, 7]) { ctx.beginPath(); ctx.moveTo(px, -54); ctx.lineTo(px * 1.5 + sway * 0.5, -29); ctx.stroke(); }
+    ctx.fillStyle = '#fafafa'; ctx.beginPath(); ctx.roundRect(-12, -85, 24, 32, 4); ctx.fill();
+    ctx.fillStyle = '#1f2a55';
+    ctx.beginPath(); ctx.moveTo(-13, -85); ctx.lineTo(13, -85); ctx.lineTo(13, -79); ctx.lineTo(0, -66); ctx.lineTo(-13, -79); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-11, -81); ctx.lineTo(0, -69); ctx.lineTo(11, -81); ctx.stroke();
+    ctx.fillStyle = '#d6283a'; ctx.beginPath(); ctx.moveTo(-5, -70); ctx.lineTo(5, -70); ctx.lineTo(0, -60); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#f2d2b6'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-12, -80); ctx.lineTo(-17, -56 + sway); ctx.moveTo(12, -80); ctx.lineTo(11, -84); ctx.stroke();
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(10, -82); ctx.lineTo(6, -88); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(5, -89, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(0, -96, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#0d0d0d';
+    ctx.beginPath(); ctx.arc(0, -98, 11.6, Math.PI, 0); ctx.lineTo(11, -93); ctx.lineTo(-11, -93); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-12, -98, 4, 26); ctx.fillRect(8, -98, 4, 26);
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(-4, -92, 2, Math.PI + 0.3, -0.3); ctx.stroke();
+    ctx.beginPath(); ctx.arc(4, -92, 2, Math.PI + 0.3, -0.3); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 拿竹刀、坐在狗背上的女孩(原點在臀部)
+  function drawKendoGirl(x, y, ph, s = 1) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-3, -48); ctx.quadraticCurveTo(-18, -46 + Math.sin(ph) * 4, -30, -38 + Math.sin(ph * 1.3) * 6); ctx.stroke();
+    ctx.fillStyle = '#22305a';
+    ctx.beginPath(); ctx.moveTo(-10, -4); ctx.lineTo(12, -4); ctx.lineTo(17, 18); ctx.lineTo(2, 20); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#f2d2b6'; ctx.fillRect(9, 18, 9, 4);
+    ctx.fillStyle = '#f7f7f2'; ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(-9, -33, 18, 31, 4); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#22305a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-5, -33); ctx.lineTo(2, -20); ctx.lineTo(7, -33); ctx.stroke();
+    ctx.strokeStyle = '#f7f7f2'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(2, -27); ctx.lineTo(16, -19); ctx.stroke();
+    ctx.strokeStyle = '#d9b56c'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(12, -16); ctx.lineTo(56, -64); ctx.stroke();
+    ctx.strokeStyle = '#7a5a2a'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(10, -14); ctx.lineTo(19, -24); ctx.stroke();
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(20, -25, 3.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(16, -19, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(2, -43, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(1, -45, 9.6, Math.PI * 0.9, Math.PI * 2.05); ctx.fill();
+    ctx.fillStyle = '#c8302c'; ctx.fillRect(-7, -49, 18, 3);
+    ctx.fillStyle = '#111'; ctx.fillRect(6, -43, 2, 2.5);
+    ctx.restore();
+  }
+
+  function drawHouse(x) {
+    const y = GROUND;
+    ctx.save();
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+    ctx.fillStyle = '#9a6a4a'; ctx.fillRect(x + 118, y - 152, 16, 36);
+    ctx.fillStyle = '#f4d7a1'; ctx.fillRect(x, y - 100, 160, 100); ctx.strokeRect(x, y - 100, 160, 100);
+    ctx.fillStyle = '#c0473a'; ctx.beginPath(); ctx.moveTo(x - 16, y - 98); ctx.lineTo(x + 80, y - 160); ctx.lineTo(x + 176, y - 98); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#8a5a3b'; ctx.fillRect(x + 64, y - 56, 32, 56);
+    ctx.fillStyle = '#ffe58a'; ctx.fillRect(x + 14, y - 82, 36, 28); ctx.fillRect(x + 110, y - 82, 36, 28);
+    ctx.strokeRect(x + 14, y - 82, 36, 28); ctx.strokeRect(x + 110, y - 82, 36, 28);
+    ctx.beginPath(); ctx.moveTo(x + 32, y - 82); ctx.lineTo(x + 32, y - 54); ctx.moveTo(x + 128, y - 82); ctx.lineTo(x + 128, y - 54); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBulletAt(x, y, ang) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+    ctx.strokeStyle = '#bbb'; ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(18 + i * 8, -3 + i * 3); ctx.lineTo(34 + i * 12, -3 + i * 3); ctx.stroke(); }
+    ctx.fillStyle = '#c89b3c'; ctx.fillRect(-2, -4, 16, 8);
+    ctx.fillStyle = '#8a8a8a'; ctx.beginPath(); ctx.moveTo(-2, -4); ctx.quadraticCurveTo(-12, 0, -2, 4); ctx.fill();
+    ctx.restore();
+  }
+
+  // 結局設定:分數與長度(影格,60fps)
+  const ENDINGS = {
+    parrot:  { score: 1580000, len: 420 },
+    adopt:   { score: 1450000, len: 640 },
+    bullets: { score: 1490000, len: 560 },
+    concert: { score: 1470000, len: 760 },
+    angel:   { score: 1570000, len: 640 },
+    samurai: { score: 1440000, len: 600 },
+    skunk:   { score: 1480000, len: 680 },
+    mlb:     { score: 1500000, len: 140 },
+  };
+  let end = null;
+
+  function startEnding(id, opts = {}) {
+    const cfg = ENDINGS[id];
+    mode = 'ending';
+    end = { id, t: 0, score: cfg.score, len: cfg.len, flags: {}, ...opts };
+    if (g) g.score = cfg.score;
+    if (cfg.score > best) { best = cfg.score; try { localStorage.setItem('blackDogBest', best); } catch (e) {} }
+    for (const k in keys) keys[k] = false;
+    document.querySelectorAll('.pad-btn').forEach(b => b.classList.remove('active'));
+    $('pad').style.visibility = 'hidden';
+    if (id === 'bullets') end.bul = buildBullets();
+    tone(660, 990, 0.18, 'triangle', 0.1); tone(990, 1320, 0.25, 'triangle', 0.1, 0.15);
+  }
+  const once = (k, fn) => { if (!end.flags[k]) { end.flags[k] = 1; fn(); } };
+
+  function updateEnding(dt) {
+    end.t += dt;
+    if (end.t > end.len + 170) once('fade', () => { $('fade').style.opacity = '1'; });
+    if (end.t > end.len + 260) exitGame();
+  }
+
+  function scoreCard(y, a) {
+    ctx.save(); ctx.globalAlpha = a;
+    const w = Math.min(W - 32, 420), h = 100;
+    ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.strokeStyle = '#222'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.roundRect(W / 2 - w / 2, y - h / 2, w, h, 12); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    txt('★ 隱藏結局達成 ★', W / 2, y - 14, 20, '#d9822b', { alpha: a, maxW: w - 20 });
+    txt(`分數 ${end.score}`, W / 2, y + 28, 32, '#222', { alpha: a, maxW: w - 20 });
+  }
+
+  function renderEnding(dt) {
+    const t = end.t;
+    ({ parrot: sceneParrot, adopt: sceneAdopt, bullets: sceneBullets, concert: sceneConcert,
+       angel: sceneAngel, samurai: sceneSamurai, skunk: sceneSkunk, mlb: sceneMLB })[end.id](t, dt);
+    if (t < 14) { ctx.save(); ctx.globalAlpha = 1 - t / 14; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+    if (t > end.len) {
+      once('done', () => { tone(523, 523, 0.2, 'triangle', 0.1); tone(659, 659, 0.2, 'triangle', 0.1, 0.18); tone(784, 784, 0.4, 'triangle', 0.1, 0.36); });
+      scoreCard(end.id === 'mlb' ? H / 2 + Math.min(H * 0.3, 150) : cardY(), prog(t, end.len, end.len + 20));
+    }
+  }
+
+  // ---- 高藝晟:鸚鵡帶上天空看彩虹 ----
+  function sceneParrot(t) {
+    const lift = ease(prog(t, 130, 330));
+    const camY = lift * GROUND * 0.9;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.globalAlpha = prog(t, 120, 300); fillSky([[0, '#6fbdf0'], [1, '#d8f0ff']]); ctx.restore();
+    const ra = prog(t, 250, 340);
+    if (ra > 0) drawRainbow(W / 2, GROUND, Math.min(W * 0.46, GROUND * 0.82), ra);
+    for (let i = 0; i < 6; i++) {
+      const span = GROUND + 80;
+      const cy = ((i * 97 + camY * 0.8) % span) - 40;
+      cloud((i * W / 6 + 50) % W, cy, 0.9, '#f0f0f0');
+    }
+    if (camY < H) plainGround(GROUND + camY);
+    const dx = W * 0.38 - 45;
+    const dy = GROUND - lift * GROUND * 0.4 + Math.sin(t * 0.08) * 4 * lift;
+    drawDog(dx, dy, { phase: t * 0.25 * lift, barking: t > 330 && t < 360 });
+    const spots = [[-22, -82], [18, -96], [58, -100], [98, -84], [-52, -54], [128, -54]];
+    spots.forEach(([ox, oy], i) => {
+      const p = ease(prog(t, 10 + i * 12, 70 + i * 12));
+      const sx = i % 2 ? W + 60 : -60, sy = dy - 160;
+      const px = lerp(sx, dx + ox, p), py = lerp(sy, dy + oy, p) + Math.sin(t * 0.15 + i) * 3;
+      drawParrot(px, py, t * 0.6 + i, PARROT_C[i % 4]);
+      if (t > 70 && t < 300 && Math.floor((t + i * 20) / 40) % 2 === 0) bubble('你好棒!', px, py - 14, 12);
+    });
+    if (t > 60 && t < 300) once('c' + Math.floor(t / 22), () => tone(1800 + Math.random() * 600, 2600, 0.08, 'sine', 0.05));
+    if (t < 130) caption('鸚鵡們:「你好棒!你好棒!」');
+    else if (t < 330) caption(`鸚鵡們把 ${dogName} 帶上了天空…`);
+    else if (t < end.len) caption(`${dogName} 看到了彩虹 🌈`);
+  }
+
+  // ---- 林奕丞:被小朋友領養 ----
+  function drawRoom(t) {
+    fillSky([[0, '#f9dfb4'], [1, '#f0c389']]);
+    ctx.fillStyle = '#b97a48'; ctx.fillRect(0, GROUND, W, H - GROUND + 10);
+    ctx.strokeStyle = '#9c6236'; ctx.lineWidth = 2;
+    for (let y = GROUND + 14; y < H; y += 16) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+    const wx = Math.max(16 + safe.l, W * 0.1), wy = Math.max(20 + safe.t, GROUND - 200);
+    ctx.fillStyle = '#1d2650'; ctx.fillRect(wx, wy, 110, 80);
+    ctx.fillStyle = '#fff6c2'; ctx.beginPath(); ctx.arc(wx + 80, wy + 24, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#1d2650'; ctx.beginPath(); ctx.arc(wx + 85, wy + 20, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    for (const [sx, sy] of [[18, 16], [40, 40], [60, 14], [26, 60], [90, 62]]) if (Math.sin(t * 0.1 + sx) > -0.5) ctx.fillRect(wx + sx, wy + sy, 2, 2);
+    ctx.strokeStyle = '#7a4d2b'; ctx.lineWidth = 6; ctx.strokeRect(wx, wy, 110, 80);
+    ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(wx + 55, wy); ctx.lineTo(wx + 55, wy + 80); ctx.stroke();
+    const fx = W - Math.max(16 + safe.r, W * 0.06) - 120;
+    ctx.fillStyle = '#a8503a'; ctx.fillRect(fx, GROUND - 92, 120, 92);
+    ctx.fillStyle = '#6e3326'; ctx.fillRect(fx - 8, GROUND - 100, 136, 10);
+    ctx.fillStyle = '#1a1010'; ctx.beginPath(); ctx.roundRect(fx + 22, GROUND - 62, 76, 62, [30, 30, 0, 0]); ctx.fill();
+    for (let i = 0; i < 3; i++) {
+      const fl = Math.sin(t * 0.3 + i * 2) * 5;
+      ctx.fillStyle = '#ff7a1a'; ctx.beginPath(); ctx.ellipse(fx + 42 + i * 18, GROUND - 16, 9, 18 + fl, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd34a'; ctx.beginPath(); ctx.ellipse(fx + 42 + i * 18, GROUND - 10, 5, 10 + fl * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = '#c23b3b'; ctx.beginPath(); ctx.ellipse(W * 0.5, GROUND + 6, Math.min(W * 0.22, 150), 10, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  function sceneAdopt(t, dt) {
+    if (t < 300) {
+      const walking = t > 150;
+      if (walking) hillOff += 2 * dt;
+      drawBackground(walking ? (t * 4) % 40 : 0);
+      const houseX = lerp(W + 60, W * 0.62, ease(prog(t, 160, 290)));
+      if (walking) drawHouse(houseX);
+      const kx = lerp(Math.max(-30, end.kidX), DOG_X - 36, ease(prog(t, 0, 40)));
+      drawDog(DOG_X, GROUND, { phase: walking ? t * 0.4 : 0, barking: t > 115 && t < 135 });
+      drawKid({ x: kx, y: GROUND, ph: walking || t < 40 ? t * 0.3 : 0, scared: false, noLabel: true });
+      if (t > 40 && t < 150) {
+        ctx.save(); ctx.strokeStyle = '#f2c9a0'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(kx + 20, GROUND - 32); ctx.lineTo(DOG_X + 30 + Math.sin(t * 0.3) * 6, GROUND - 42); ctx.stroke(); ctx.restore();
+        drawHeart(DOG_X + 40, GROUND - 80 - ((t - 40) % 40), 12, '#ff5d7a', 1 - ((t - 40) % 40) / 40);
+      }
+      if (t > 30 && t < 90) bubble('你好可愛…', kx + 12, GROUND - 64);
+      if (t > 90 && t < 150) bubble('跟我回家好不好?', kx + 12, GROUND - 64);
+      caption(t < 150 ? '被略過的小朋友停下了腳步…' : `小朋友把 ${dogName} 領養回家了`);
+      blackout(prog(t, 270, 300));
+      return;
+    }
+    drawRoom(t);
+    const cx = W * 0.5;
+    person(Math.max(30, cx - 190), 1.5, '#3a6fb0', 0);
+    person(Math.max(70, cx - 140), 1.4, '#d9668f', 0);
+    person(cx + 50, 1, '#3aa36b', 0);
+    const old = t > 470;
+    drawDog(cx - 46, GROUND, { duck: true, old });
+    for (let i = 0; i < 4; i++) {
+      const k = ((t * 0.6 + i * 30) % 120) / 120;
+      drawHeart(cx - 60 + i * 34, GROUND - 40 - k * 90, 10 + i % 2 * 4, i % 2 ? '#ff8fa3' : '#ff5d7a', 1 - k);
+    }
+    if (t < 460) caption(`${dogName} 有了一個幸福的家 ❤`);
+    else if (t < 480) caption('');
+    else if (t < end.len) caption(`許多年後… ${dogName} 溫暖地度過了幸福的餘生`);
+    blackout(1 - prog(t, 300, 330));
+    if (t > 450 && t < 490) blackout(Math.sin(prog(t, 450, 490) * Math.PI) * 0.8);
+  }
+
+  // ---- 賴冠宇:四面八方的子彈 ----
+  function buildBullets() {
+    const P = Math.PI;
+    const list = [[0, 'jump'], [P, 'jump'], [-P / 4, 'leanL'], [-3 * P / 4, 'leanR'], [-P / 2, 'leanL'],
+                  [0, 'duck'], [P, 'duck'], [-P / 8, 'jump'], [-7 * P / 8, 'jump'], [-P / 2, 'leanR']];
+    const out = list.map(([a, d], i) => ({ a, d, at: 80 + i * 32 }));
+    for (const a of [0, P, -P / 12, -11 * P / 12]) out.push({ a, d: 'big', at: 440 });
+    return out;
+  }
+  function sceneBullets(t) {
+    drawBackground(0);
+    ctx.save(); ctx.globalAlpha = 0.08 + Math.sin(t * 0.2) * 0.04; ctx.fillStyle = '#d33'; ctx.fillRect(0, 0, W, H); ctx.restore();
+    const bx = W / 2 - 40;
+    let ox = 0, oy = 0, duck = false;
+    for (const b of end.bul) {
+      const dp = (t - (b.at - 16)) / 32;
+      if (dp <= 0 || dp >= 1) continue;
+      const s = Math.sin(dp * Math.PI);
+      if (b.d === 'jump') oy = Math.min(oy, -110 * s);
+      else if (b.d === 'big') oy = Math.min(oy, -150 * s);
+      else if (b.d === 'leanL') ox = -95 * s;
+      else if (b.d === 'leanR') ox = 95 * s;
+      else duck = true;
+    }
+    const sunglassesOn = t >= 520;
+    drawDog(bx + ox, GROUND + oy, { duck, shades: sunglassesOn, phase: 0, barking: t > 530 && t < 550 });
+    if (t >= 470 && t < 520) {
+      const p = ease(prog(t, 470, 520));
+      ctx.save(); ctx.translate(bx, lerp(-60, GROUND, p)); ctx.rotate((1 - p) * 3); drawShades(); ctx.restore();
+    }
+    const R = Math.hypot(W, H) * 0.6, TR = 40;
+    let dodged = 0;
+    for (const b of end.bul) {
+      const p = (t - (b.at - TR)) / TR;
+      if (t >= b.at + 4) dodged++;
+      if (p <= 0 || p > 2.6) continue;
+      once('w' + b.at + b.a, () => tone(1400, 300, 0.25, 'square', 0.04));
+      const tx = W / 2, ty = GROUND - (b.d === 'duck' ? 44 : 28);
+      const sx = tx + Math.cos(b.a) * R, sy = ty + Math.sin(b.a) * R;
+      const x = lerp(sx, tx, p), y = lerp(sy, ty, p);
+      if (y < GROUND) drawBulletAt(x, y, b.a);
+      if (t > b.at && t < b.at + 24) txt('閃!', W / 2 + 70, GROUND - 120 - (t - b.at), 22, '#d9822b', { stroke: '#fff', alpha: 1 - (t - b.at) / 24 });
+    }
+    if (t < 60) caption('四面八方都有子彈射過來了!!');
+    else if (t < 470) caption(`閃過子彈 ${dodged} / ${end.bul.length}`);
+    else if (t < end.len) caption(`😎 ${dogName}:「小意思。」`);
+  }
+
+  // ---- 林鼎勳:演唱會 ----
+  function playSong() {
+    const mel = [0, 2, 4, 7, 9, 7, 4, 2, 0, 2, 4, 4, 2, 0, 2, -3, 0, 2, 4, 7, 9, 12, 9, 7, 4, 7, 4, 2, 0, -3, 0];
+    const beat = 0.32;
+    mel.forEach((n, i) => {
+      const f = 523.25 * Math.pow(2, n / 12);
+      tone(f, f * 1.001, beat * 0.9, 'triangle', 0.08, i * beat);
+      if (i % 2 === 0) { const b = 130.8 * Math.pow(2, [0, 5, 7, 0][(i / 2 | 0) % 4] / 12); tone(b, b * 1.001, beat * 1.8, 'sine', 0.06, i * beat); }
+    });
+  }
+  function sceneConcert(t, dt) {
+    const KID_C = ['#3aa36b', '#e0a030', '#4a7bd1', '#d9668f', '#8a5ad1'];
+    if (t < 180) {
+      const run = Math.max(0, t - 110);
+      if (run) hillOff += 3 * dt;
+      drawBackground(run ? (t * 6) % 40 : 0);
+      drawDog(DOG_X + run * 5, GROUND, { phase: run ? t * 0.45 : 0, barking: t > 70 && t < 90 });
+      for (let i = 0; i < 5; i++) {
+        const tx = DOG_X + 96 + i * 34 + run * 5;
+        const x = lerp(W + 30 + i * 40, tx, ease(prog(t, 0, 60)));
+        drawKid({ x, y: GROUND, ph: t < 60 || run ? t * 0.4 + i : 0, scared: false, noLabel: true, shirt: KID_C[i] });
+      }
+      if (t > 40 && t < 130) bubble('一起去看演唱會吧!', DOG_X + 150, GROUND - 70);
+      caption(`一群小朋友把 ${dogName} 帶到了演唱會現場…`);
+      blackout(prog(t, 140, 180));
+      return;
+    }
+    const s = t - 180;
+    once('song', playSong);
+    ctx.fillStyle = '#120f26'; ctx.fillRect(0, 0, W, H);
+    const stageTop = GROUND - 34;
+    ['rgba(255,122,182,.16)', 'rgba(110,170,255,.16)', 'rgba(255,220,110,.16)'].forEach((c, i) => {
+      const sx = W * (0.2 + 0.3 * i), sw = Math.sin(t * 0.03 + i * 2) * W * 0.12;
+      ctx.fillStyle = c; ctx.beginPath();
+      ctx.moveTo(sx - 6, 0); ctx.lineTo(sx + 6, 0); ctx.lineTo(sx + sw + 70, stageTop); ctx.lineTo(sx + sw - 70, stageTop); ctx.closePath(); ctx.fill();
+    });
+    const bw = Math.min(W * 0.62, 340), by = Math.max(24 + safe.t, stageTop - 178);
+    ctx.fillStyle = '#241d45'; ctx.strokeStyle = '#ff7ab6'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.roundRect(W / 2 - bw / 2, by, bw, 50, 10); ctx.fill(); ctx.stroke();
+    txt('tuki.', W / 2, by + 36, 32, '#fff', { glow: '#ff7ab6', maxW: bw - 20, family: 'Georgia, serif' });
+    ctx.fillStyle = '#2c2450'; ctx.fillRect(0, stageTop, W, H - stageTop);
+    ctx.strokeStyle = '#ff7ab6'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, stageTop); ctx.lineTo(W, stageTop); ctx.stroke();
+    const singerX = W * 0.6;
+    drawSinger(singerX, stageTop, t * 0.08);
+    drawDog(singerX - 170, stageTop, { barking: Math.floor(s / 24) % 2 === 0, phase: t * 0.1, barkColor: '#ffe27a' });
+    for (let i = 0; i < 7; i++) {
+      const k = ((s * 0.7 + i * 37) % 160) / 160;
+      const nx = (i % 2 ? singerX : singerX - 100) + Math.sin(k * 6 + i) * 24;
+      txt(i % 3 ? '♪' : '♫', nx, stageTop - 110 - k * 120, 22, ['#ff7ab6', '#9fd0ff', '#ffe27a'][i % 3], { alpha: 1 - k });
+    }
+    for (let x = 10, i = 0; x < W + 20; x += 28, i++) {
+      const hy = GROUND + 16 + Math.sin(t * 0.15 + i) * 3;
+      const sway = Math.sin(t * 0.1 + i * 0.7) * 8;
+      ctx.strokeStyle = ['#ff7ab6', '#9fd0ff', '#ffe27a', '#9effa8'][i % 4]; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + 8, hy - 4); ctx.lineTo(x + 12 + sway, hy - 34); ctx.stroke();
+      ctx.fillStyle = '#05040c'; ctx.beginPath(); ctx.arc(x, hy, 13, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(x - 15, hy + 8, 30, H);
+    }
+    if (s > 380) {
+      for (let i = 0; i < 40; i++) {
+        const cx = (i * 71.3) % W, cy = ((s - 380) * (1.5 + (i % 5) * 0.3) + i * 23) % (GROUND + 40) - 20;
+        ctx.fillStyle = ['#ff7ab6', '#9fd0ff', '#ffe27a', '#9effa8'][i % 4];
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(s * 0.1 + i); ctx.fillRect(-3, -2, 6, 4); ctx.restore();
+      }
+    }
+    if (s < 260) txt(`和 tuki. 一起完成最後一首歌 🎤`, W / 2, capY(), 20, '#fff', { stroke: '#120f26' });
+    else if (t < end.len) txt(`♪ ${dogName}:汪~汪汪~ 謝謝大家!♪`, W / 2, capY(), 20, '#fff', { stroke: '#120f26' });
+    blackout(1 - prog(t, 180, 210));
+  }
+
+  // ---- 陳柏廷:天使帶往天堂 ----
+  function sceneAngel(t) {
+    const lift = ease(prog(t, 240, 500));
+    const camY = lift * GROUND * 1.1;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.globalAlpha = prog(t, 200, 420); fillSky([[0, '#ffe08a'], [1, '#fff8dc']]); ctx.restore();
+    const beam = prog(t, 30, 120) * (1 - prog(t, 480, 560));
+    const cxd = DOG_X + 40;
+    if (beam > 0) {
+      ctx.save(); ctx.globalAlpha = beam * 0.55;
+      const gr = ctx.createLinearGradient(0, 0, 0, GROUND); gr.addColorStop(0, '#fff3b0'); gr.addColorStop(1, 'rgba(255,243,176,0)');
+      ctx.fillStyle = gr; ctx.beginPath();
+      ctx.moveTo(cxd - 30, 0); ctx.lineTo(cxd + 30, 0); ctx.lineTo(cxd + 100, GROUND + camY); ctx.lineTo(cxd - 100, GROUND + camY); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    for (let i = 0; i < 6; i++) {
+      const span = GROUND + 80;
+      cloud((i * W / 6 + 70) % W, ((i * 83 + camY * 0.9) % span) - 40, 1, 'rgba(255,255,255,.9)');
+    }
+    const ga = prog(t, 400, 500);
+    if (ga > 0) {
+      ctx.save(); ctx.globalAlpha = ga;
+      const gy = Math.max(10 + safe.t, GROUND * 0.06);
+      for (let x = -20; x < W + 40; x += 46) cloud(x, gy + 70, 1.3, '#fff');
+      ctx.strokeStyle = '#e2b13c'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(W / 2 - 50, gy + 74); ctx.lineTo(W / 2 - 50, gy + 24); ctx.arc(W / 2, gy + 24, 50, Math.PI, 0); ctx.lineTo(W / 2 + 50, gy + 74); ctx.stroke();
+      ctx.lineWidth = 2;
+      for (let x = -36; x <= 36; x += 12) { ctx.beginPath(); ctx.moveTo(W / 2 + x, gy + 74); ctx.lineTo(W / 2 + x, gy + 28 - Math.sqrt(2500 - x * x) + 26); ctx.stroke(); }
+      ctx.restore();
+    }
+    if (t > 300 && t < 620) {
+      const p = prog(t, 300, 620);
+      const px = lerp(W + 60, -120, p), py = GROUND * 0.32 + Math.sin(t * 0.05) * 6;
+      ctx.save(); ctx.globalAlpha = 0.55; ctx.translate(px, py); ctx.scale(0.35, 0.35);
+      drawDog(0, 0, { phase: t * 0.3 });
+      [[0, -78], [36, -92], [72, -80]].forEach(([ox, oy], i) => drawParrot(ox, oy, t * 0.6 + i, PARROT_C[i]));
+      ctx.restore();
+    }
+    if (camY < H) { plainGround(GROUND + camY); drawClosedTrap(DOG_X + 18, GROUND + camY); }
+    let dogY;
+    if (t < 210) {
+      dogY = GROUND;
+      drawDog(DOG_X, GROUND, { duck: true });
+    } else {
+      dogY = GROUND - 8 - prog(t, 210, 240) * 10 - lift * GROUND * 0.45;
+      drawDog(DOG_X, dogY, { halo: t > 240, phase: 0 });
+    }
+    const ay = t < 210 ? lerp(-80, GROUND - 120, ease(prog(t, 60, 210))) : dogY - 112;
+    if (t > 60) drawAngel(cxd, ay, t * 0.25);
+    if (t > 60) once('choir2', () => { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.001, 2.2, 'sine', 0.05, i * 0.08)); });
+    if (t > 240) once('choir3', () => { [587, 740, 880].forEach((f, i) => tone(f, f * 1.001, 2.5, 'sine', 0.05, i * 0.1)); });
+    if (t < 210) caption('天上飛下來一位天使…');
+    else if (t < 330) caption(`天使將 ${dogName} 帶往天堂`);
+    else if (t < end.len) caption('遠方好像也有一隻黑狗,被鸚鵡們帶走了…');
+  }
+
+  // ---- 劉祐維:夕陽下的武士犬 ----
+  function sceneSamurai(t) {
+    fillSky([[0, '#2d1b4e'], [0.45, '#b6416b'], [0.8, '#ff9a3c'], [1, '#ffd27a']]);
+    const sr = Math.min(80, W * 0.13);
+    ctx.save(); ctx.shadowColor = '#ffcf5a'; ctx.shadowBlur = 40;
+    ctx.fillStyle = '#ffcf5a'; ctx.beginPath(); ctx.arc(W * 0.7, GROUND - 10, sr, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    const running = t > 100;
+    const run = Math.max(0, t - 100);
+    ctx.fillStyle = '#5a2d4f'; ctx.beginPath(); ctx.moveTo(0, GROUND);
+    for (let x = 0; x <= W + 10; x += 10) { const k = x + run * 1.5; ctx.lineTo(x, GROUND - 30 - Math.sin(k / 80) * 16 - Math.sin(k / 31) * 6); }
+    ctx.lineTo(W, GROUND); ctx.fill();
+    ctx.fillStyle = '#3f6b2c'; ctx.fillRect(0, GROUND, W, H - GROUND + 10);
+    ctx.strokeStyle = '#2c4f1d'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, GROUND); ctx.lineTo(W, GROUND); ctx.stroke();
+    ctx.strokeStyle = '#5d9440'; ctx.lineWidth = 2;
+    for (let x = -((run * 8) % 36); x < W; x += 36) {
+      ctx.beginPath(); ctx.moveTo(x, GROUND); ctx.lineTo(x - 3, GROUND - 9); ctx.moveTo(x + 4, GROUND); ctx.lineTo(x + 6, GROUND - 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 18, GROUND + 18); ctx.lineTo(x + 15, GROUND + 10); ctx.stroke();
+    }
+    const S = 1.5, dogX = W * 0.36 - 40 * S;
+    const bob = running ? -Math.abs(Math.sin(t * 0.25)) * 5 : 0;
+    ctx.save(); ctx.translate(dogX, GROUND + bob); ctx.scale(S, S);
+    drawDog(0, 0, { phase: running ? t * 0.5 : 0, kabuto: t >= 55 });
+    if (t >= 10 && t < 55) {
+      const p = ease(prog(t, 10, 55));
+      ctx.save(); ctx.translate(0, lerp(-(GROUND + 120) / S, 0, p)); drawKabuto(); ctx.restore();
+    }
+    if (t >= 95) drawKendoGirl(34, -40, t * 0.3, 0.8);
+    ctx.restore();
+    if (t >= 50 && t < 95) {
+      const p = prog(t, 50, 95);
+      const gx = lerp(-40, dogX + 34 * S, p), gy = lerp(GROUND - 30, GROUND - 40 * S, p) - Math.sin(p * Math.PI) * 70;
+      drawKendoGirl(gx, gy, t * 0.3, 0.8 * S);
+    }
+    if (t > 95) once('mount', () => { tone(90, 50, 0.5, 'square', 0.15); tone(440, 880, 0.3, 'triangle', 0.08, 0.3); });
+    if (t < 110) caption(`一位拿著竹刀的女孩騎上了 ${dogName}`);
+    else if (t < end.len) caption('夕陽下,奔馳在草原上…');
+  }
+
+  // ---- 李皓哲:臭鼬稱王 ----
+  function sceneSkunk(t) {
+    const boom = 280;
+    if (t < 440) {
+      const shakeAmt = t > 130 && t < boom ? 6 * prog(t, 130, boom) : t >= boom && t < boom + 70 ? 14 : 0;
+      ctx.save(); ctx.translate((Math.random() - 0.5) * shakeAmt, (Math.random() - 0.5) * shakeAmt);
+      drawBackground(0);
+      if (t < 100) drawClosedTrap(DOG_X + 18, GROUND);
+      else {
+        const k = (t - 100) * 2;
+        ctx.save(); ctx.translate(DOG_X + 10 - k, GROUND - k * 0.2); ctx.rotate(-k * 0.02); ctx.fillStyle = '#888'; ctx.fillRect(0, -8, 20, 6); ctx.restore();
+        ctx.save(); ctx.translate(DOG_X + 40 + k, GROUND - k * 0.2); ctx.rotate(k * 0.02); ctx.fillStyle = '#888'; ctx.fillRect(0, -8, 20, 6); ctx.restore();
+      }
+      if (t > 130 && t < boom) {
+        const p = prog(t, 130, boom);
+        for (let i = 0; i < 3; i++) {
+          ctx.save(); ctx.globalAlpha = 0.25 + 0.15 * Math.sin(t * 0.4 + i);
+          ctx.fillStyle = '#8fc23a'; ctx.beginPath(); ctx.arc(DOG_X + 2, GROUND - 52, 8 + p * 46 * (1 - i * 0.25) + Math.sin(t * 0.5) * 3, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        }
+        once('r' + Math.floor(t / 30), () => tone(70 + p * 60, 50, 0.45, 'sawtooth', 0.06 + p * 0.06));
+      }
+      drawDog(DOG_X, GROUND, { duck: t < 90, skunk: true, phase: t > 130 ? t * 0.8 : 0 });
+      if (t >= boom) {
+        once('boom', () => { sfx.crash(); tone(80, 30, 1.6, 'sawtooth', 0.25); tone(120, 40, 1.2, 'square', 0.12, 0.1); });
+        const r = (t - boom) * 30;
+        ctx.save(); ctx.globalAlpha = 0.92; ctx.fillStyle = '#8fc23a';
+        ctx.beginPath(); ctx.arc(DOG_X + 2, GROUND - 52, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#a8d84e';
+        for (let i = 0; i < 10; i++) {
+          const a = i / 10 * Math.PI * 2 + t * 0.01;
+          ctx.beginPath(); ctx.arc(DOG_X + 2 + Math.cos(a) * r * 0.8, GROUND - 52 + Math.sin(a) * r * 0.8, r * 0.3, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        ctx.save(); ctx.strokeStyle = '#5e8a1e'; ctx.lineWidth = 3;
+        for (let i = 0; i < 8; i++) {
+          const x = (i * 97 + t * 2) % W, y = (i * 53) % GROUND + 20;
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.bezierCurveTo(x + 8, y - 10, x - 8, y - 20, x, y - 30); ctx.stroke();
+        }
+        ctx.restore();
+      }
+      ctx.restore();
+      if (t < 130) caption(`${dogName}(臭鼬)重新站了起來…`);
+      else if (t < boom) caption('正在蓄積一個超級大臭屁……');
+      else txt('噗————!!! 臭屁轟了全世界!!', W / 2, capY(), 24, '#3d5c10', { stroke: '#fff' });
+      if (t > 400) { ctx.save(); ctx.globalAlpha = prog(t, 400, 440); ctx.fillStyle = '#8fc23a'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+      return;
+    }
+    fillSky([[0, '#2a1640'], [1, '#4a2a5e']]);
+    ctx.fillStyle = '#3b2450'; ctx.fillRect(0, GROUND, W, H - GROUND + 10);
+    const cx = W / 2, seatY = GROUND - 30;
+    ctx.fillStyle = '#b3202a';
+    ctx.beginPath(); ctx.moveTo(cx - 44, seatY); ctx.lineTo(cx + 44, seatY); ctx.lineTo(cx + 150, H + 10); ctx.lineTo(cx - 150, H + 10); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#e2b13c'; ctx.beginPath(); ctx.roundRect(cx - 72, seatY - 150, 144, 152, [44, 44, 6, 6]); ctx.fill();
+    ctx.fillStyle = '#9c1b2b'; ctx.beginPath(); ctx.roundRect(cx - 54, seatY - 132, 108, 122, [34, 34, 4, 4]); ctx.fill();
+    ctx.fillStyle = '#e2b13c'; ctx.fillRect(cx - 84, seatY - 6, 168, 16); ctx.fillRect(cx - 90, seatY - 44, 20, 50); ctx.fillRect(cx + 70, seatY - 44, 20, 50);
+    ctx.fillRect(cx - 80, seatY + 10, 12, 30); ctx.fillRect(cx + 68, seatY + 10, 12, 30);
+    ctx.fillStyle = '#3ad0e0'; ctx.beginPath(); ctx.arc(cx, seatY - 140, 7, 0, Math.PI * 2); ctx.fill();
+    drawDog(cx - 46, seatY - 6, { skunk: true, crown: true, phase: t * 0.05 });
+    for (let i = 0; i < 12; i++) {
+      const a = Math.sin(t * 0.08 + i * 1.7);
+      if (a < 0.3) continue;
+      const sx = cx + Math.cos(i * 0.9) * (110 + i * 6), sy = seatY - 80 + Math.sin(i * 1.3) * 70;
+      ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#ffe27a'; ctx.translate(sx, sy); ctx.rotate(Math.PI / 4); ctx.fillRect(-3, -3, 6, 6); ctx.restore();
+    }
+    ctx.save(); ctx.globalAlpha = 0.3; ctx.fillStyle = '#8fc23a';
+    for (let x = -20; x < W + 40; x += 50) { ctx.beginPath(); ctx.arc(x + Math.sin(t * 0.03 + x) * 10, H - 10, 40, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+    once('king', () => { [392, 523, 659, 784].forEach((f, i) => tone(f, f * 1.001, 0.5, 'square', 0.06, i * 0.18)); });
+    if (t < end.len) txt(`👑 ${dogName} 在王座上稱王了!`, W / 2, capY(), 20, '#fff', { stroke: '#2a1640' });
+    if (t < 480) { ctx.save(); ctx.globalAlpha = 1 - prog(t, 440, 480); ctx.fillStyle = '#8fc23a'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  }
+
+  // ---- 姜博凱:報紙頭條 ----
+  function sceneMLB(t) {
+    drawBackground(0);
+    drawDog(egg.dogX, GROUND, { ball: true, name: dogName });
+    const p = ease(prog(t, 0, 50));
+    ctx.save(); ctx.globalAlpha = 0.4 * p; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore();
+    const pw = Math.min(W - 28, 560);
+    const ph = Math.min(H - 28 - safe.t, Math.max(pw * 0.7, Math.min(pw * 1.25, H * 0.72)));
+    ctx.save();
+    ctx.translate(W / 2, safe.t / 2 + H / 2);
+    ctx.rotate((1 - p) * Math.PI * 6);
+    ctx.scale(0.05 + 0.95 * p, 0.05 + 0.95 * p);
+    ctx.fillStyle = '#f3eedf'; ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
+    ctx.fillRect(-pw / 2, -ph / 2, pw, ph); ctx.strokeRect(-pw / 2, -ph / 2, pw, ph);
+    const T = -ph / 2, L = -pw / 2 + 16, inner = pw - 32;
+    txt('汪 汪 日 報', 0, T + ph * 0.12, Math.min(ph * 0.11, 46), '#111', { maxW: inner, family: '"PMingLiU", "Songti TC", serif' });
+    const d = new Date();
+    txt(`${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 · 號外`, 0, T + ph * 0.175, Math.min(ph * 0.035, 14), '#555', { maxW: inner, weight: 'normal' });
+    ctx.fillStyle = '#222'; ctx.fillRect(L, T + ph * 0.195, inner, 3); ctx.fillRect(L, T + ph * 0.205, inner, 1);
+    txt('第一個進入大聯盟的黑狗!', 0, T + ph * 0.3, Math.min(ph * 0.085, 40), '#b3202a', { maxW: inner });
+    const bxw = inner * 0.5, bxh = ph * 0.54, bxx = L, bxy = T + ph * 0.36;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(bxx, bxy, bxw, bxh); ctx.clip();
+    ctx.fillStyle = '#d9d4c4'; ctx.fillRect(bxx, bxy, bxw, bxh);
+    const gy = bxy + bxh * 0.86;
+    ctx.fillStyle = '#c2bca9'; ctx.fillRect(bxx, gy, bxw, bxh);
+    const sc = Math.min(bxw / 260, bxh / 200);
+    ctx.translate(bxx + bxw * 0.5, gy); ctx.scale(sc, sc);
+    drawCarSmall();
+    drawDog(-40, -120, { ball: true, phase: 1 });
+    ctx.restore();
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5; ctx.strokeRect(bxx, bxy, bxw, bxh);
+    const rx = bxx + bxw + 12, rw = inner - bxw - 12;
+    const ls = Math.min(ph * 0.04, 15);
+    txt(`「${dogName}」飛身躍過汽車`, rx, bxy + ls + 2, ls + 1, '#222', { align: 'left', maxW: rw });
+    txt('一口咬住全壘打球!', rx, bxy + ls * 2.6, ls + 1, '#222', { align: 'left', maxW: rw });
+    txt('球探:「牠是天生的外野手。」', rx, bxy + ls * 4.2, ls, '#555', { align: 'left', maxW: rw, weight: 'normal' });
+    ctx.fillStyle = '#bdb6a2';
+    for (let y = bxy + ls * 5.4, i = 0; y < bxy + bxh - 4; y += ls * 1.1, i++) ctx.fillRect(rx, y, rw * (i % 4 === 3 ? 0.6 : 1), Math.max(2, ls * 0.4));
+    ctx.restore();
+  }
+  function drawCarSmall() {
+    ctx.fillStyle = '#777';
+    ctx.beginPath(); ctx.roundRect(-110, -50, 220, 36, 10); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(-60, -86, 110, 40, 14); ctx.fill();
+    ctx.fillStyle = '#222';
+    for (const wx of [-70, 70]) { ctx.beginPath(); ctx.arc(wx, -14, 15, 0, Math.PI * 2); ctx.fill(); }
+  }
+
   function exitGame() {
     mode = 'exit';
     document.body.innerHTML = '<div id="exitScreen"><div>遊戲已退出</div><div style="font-size:14px">重新整理頁面即可重新開始</div></div>';
@@ -679,7 +1533,8 @@
     last = now;
     if (mode === 'play') { update(dt); renderGame(); }
     else if (mode === 'over') renderGame();
-    else if (mode === 'egg') { updateEgg(dt); renderEgg(); }
+    else if (mode === 'egg') { updateEgg(dt); if (mode === 'egg') renderEgg(); }
+    else if (mode === 'ending') { updateEnding(dt); if (mode === 'ending') renderEnding(dt); }
     else if (mode === 'name') { drawBackground(0); drawDog(DOG_X, GROUND); }
     if (mode !== 'exit') requestAnimationFrame(loop);
   }
