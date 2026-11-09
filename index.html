@@ -433,7 +433,7 @@
         o.passed = true;
         if (o.type === 'bird') {
           st.birdSkipped++;
-          if (dogName === '高藝晟' && g.score === 1000) { startEnding('parrot'); return; }
+          if (dogName === '高藝晟' && g.score > 1000) { startEnding('parrot'); return; }
         } else {
           st.kidSkipped++;
           if (dogName === '林奕丞' && st.kidScared >= 10) { startEnding('adopt', { kidX: o.x }); return; }
