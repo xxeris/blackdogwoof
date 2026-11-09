@@ -53,27 +53,35 @@
   .pad-btn small { font-size: 12px; }
   .pad-btn.active { transform: scale(.92); background: #f5c542; color: #222; }
 
+  /* 手機:遊戲畫面全螢幕,依螢幕比例調整 */
   @media (pointer: coarse) {
-    html, body { overscroll-behavior: none; }
-    body { justify-content: flex-start; padding: 12px 16px; touch-action: manipulation; }
+    html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+    body { padding: 0; background: #fff; touch-action: none; }
     h1, .keys { display: none; }
+    #wrap { position: fixed; inset: 0; width: 100%; max-width: none; }
+    canvas { width: 100%; height: 100%; border: 0; border-radius: 0; }
+    /* 直式:按鍵在地面下方的土地區 */
     #pad {
-      display: flex; justify-content: space-between; align-items: center;
-      width: 100%; max-width: 900px; flex: 1; padding-block: 20px;
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+      height: calc(210px + env(safe-area-inset-bottom, 0px));
+      justify-content: space-between; align-items: center;
+      padding: 12px max(24px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(24px, env(safe-area-inset-left, 0px));
     }
     .overlay { position: fixed; inset: 0; border-radius: 0; z-index: 20; }
   }
-  /* 橫式:按鍵半透明疊在遊戲畫面上 */
+  /* 橫式:按鍵半透明,排成一列在畫面最下方,不擋到遊戲 */
   @media (pointer: coarse) and (orientation: landscape) {
-    body { height: 100vh; height: 100dvh; padding: 0; justify-content: center; overflow: hidden; }
-    #wrap { width: min(100vw, 300vh); }
     #pad {
-      position: fixed; inset: 0; margin: 0; pointer-events: none; align-items: flex-end;
-      padding: 12px max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      height: calc(80px + env(safe-area-inset-bottom, 0px));
+      padding: 7px max(20px, env(safe-area-inset-right, 0px)) calc(7px + env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
     }
-    .pad-group { gap: 10px; }
-    .pad-btn { pointer-events: auto; opacity: .45; width: 66px; height: 66px; font-size: 24px; }
-    .pad-btn.active { opacity: .75; }
+    .pad-group { flex-direction: row; gap: 14px; }
+    .pad-btn { opacity: .5; width: 66px; height: 66px; font-size: 22px; }
+    .pad-btn.active { opacity: .85; }
+  }
+  #safe {
+    position: fixed; visibility: hidden; pointer-events: none;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
 
   #exitScreen {
@@ -124,14 +132,19 @@
 </div>
 
 <div id="fade"></div>
+<div id="safe"></div>
 
 <script>
 (() => {
   const cv = document.getElementById('c');
   const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height, GROUND = 250, DOG_X = 90;
+  const DOG_X = 90;
   const EGG_NAME = '姜博凱';
   const isTouch = window.matchMedia('(pointer: coarse)').matches;
+  // 世界座標:W/H/GROUND 會隨螢幕大小改變(電腦固定 900x300)
+  let W = 900, H = 300, GROUND = 250, SCALE = 1, SPEED_K = 1;
+  const safe = { t: 0, l: 0, r: 0 };
+  let clouds = [], hillOff = 0;
   const LABEL = isTouch
     ? { bird: '▲', kid: '▼', bullet: '蹲', trap: '跳', duck: '按「蹲」', jump: '按「跳」' }
     : { bird: 'W', kid: 'S', bullet: 'Shift', trap: 'Space', duck: '按 Shift 趴下', jump: '按 Space 跳過' };
@@ -170,6 +183,50 @@
     crash() { tone(200, 40, 0.6, 'sawtooth', 0.25); tone(900, 100, 0.3, 'square', 0.1, 0.05); },
   };
 
+  // ---------- 畫面尺寸 ----------
+  const cloudY = () => 20 + Math.random() * Math.max(40, GROUND - 200);
+  function makeClouds() {
+    const n = Math.max(3, Math.round((W * GROUND) / 60000));
+    clouds = Array.from({ length: n }, () => ({ x: Math.random() * W, y: cloudY() }));
+  }
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    let cssW = 900, cssH = 300, newGround = 250;
+    if (isTouch) {
+      cssW = window.innerWidth; cssH = window.innerHeight;
+      const band = $('pad').getBoundingClientRect().height;
+      const groundPx = cssH - band;
+      // 地面以上至少留 250 單位給遊戲,寬度至少看得到 520 單位
+      SCALE = Math.min(groundPx / 250, cssW / 520);
+      W = cssW / SCALE; H = cssH / SCALE;
+      newGround = groundPx / SCALE;
+      const cs = getComputedStyle($('safe'));
+      safe.t = parseFloat(cs.paddingTop) / SCALE || 0;
+      safe.l = parseFloat(cs.paddingLeft) / SCALE || 0;
+      safe.r = parseFloat(cs.paddingRight) / SCALE || 0;
+    } else {
+      SCALE = 1; W = 900; H = 300;
+    }
+    // 轉向時把場上物件跟著地面移動
+    const dy = newGround - GROUND;
+    if (dy && g) { for (const o of g.obs) o.y += dy; for (const p of g.pops) p.y += dy; }
+    GROUND = newGround;
+    SPEED_K = Math.max(0.58, Math.min(1, W / 900)); // 畫面窄時速度跟著縮,反應時間不變
+    cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr * SCALE, 0, 0, dpr * SCALE, 0, 0);
+    makeClouds();
+  }
+
+  function goFullscreen() {
+    if (!isTouch || document.fullscreenElement) return;
+    const el = document.documentElement;
+    try {
+      const r = (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el, { navigationUI: 'hide' });
+      if (r && r.catch) r.catch(() => {});
+    } catch (e) {}
+  }
+
   // ---------- 狀態 ----------
   let mode = 'name';      // name | play | over | egg | exit
   let dogName = '';
@@ -181,7 +238,6 @@
       t: 0, score: 0, speed: 6,
       dogY: 0, vy: 0, duck: false, bark: 0, barkText: '',
       obs: [], pops: [], nextSpawn: 60, lastDanger: -999,
-      clouds: [{ x: 200, y: 50 }, { x: 520, y: 80 }, { x: 800, y: 40 }],
       groundOff: 0,
     };
   }
@@ -238,12 +294,14 @@
     if (!n) { nameInput.focus(); return; }
     dogName = n;
     audio();
+    goFullscreen();
     nameInput.blur();
     nameScreen.classList.add('hidden');
     if (n === EGG_NAME) startEgg(); else startPlay();
   }
 
   function startPlay() {
+    goFullscreen();
     newGame();
     overScreen.classList.add('hidden');
     mode = 'play';
@@ -254,7 +312,7 @@
     sfx.bark();
     // 找吠叫範圍內最近的目標
     const target = g.obs
-      .filter(o => o.type === (where === 'sky' ? 'bird' : 'kid') && !o.scared && o.x > DOG_X - 10 && o.x < DOG_X + 380)
+      .filter(o => o.type === (where === 'sky' ? 'bird' : 'kid') && !o.scared && o.x > DOG_X - 10 && o.x < Math.min(DOG_X + 380, W))
       .sort((a, b) => a.x - b.x)[0];
     if (target) {
       target.scared = true;
@@ -285,13 +343,13 @@
     const x = W + 30;
     // 危險物抵達狗的時間要錯開,避免同時要跳又要趴
     if (type === 'bullet' || type === 'trap') {
-      const v = type === 'bullet' ? g.speed + 5 : g.speed;
+      const v = (type === 'bullet' ? g.speed + 5 : g.speed) * SPEED_K;
       const arrive = g.t + (x - DOG_X) / v;
       if (Math.abs(arrive - g.lastDanger) < 45) type = Math.random() < 0.5 ? 'bird' : 'kid';
       else g.lastDanger = arrive;
     }
     const o = { type, x, scared: false, passed: false, ph: Math.random() * 6 };
-    if (type === 'bird') { o.y = 60 + Math.random() * 50; o.w = 36; o.h = 20; }
+    if (type === 'bird') { o.y = GROUND - 190 + Math.random() * 50; o.w = 36; o.h = 20; }
     if (type === 'kid') { o.y = GROUND; o.w = 24; o.h = 50; }
     if (type === 'bullet') { o.y = GROUND - 42; o.w = 22; o.h = 8; }
     if (type === 'trap') { o.y = GROUND; o.w = 44; o.h = 16; }
@@ -307,8 +365,10 @@
   function update(dt) {
     g.t += dt;
     g.speed = Math.min(14, 6 + g.t * 0.0025);
-    g.groundOff = (g.groundOff + g.speed * dt) % 40;
-    for (const c of g.clouds) { c.x -= 0.6 * dt; if (c.x < -80) { c.x = W + 60; c.y = 30 + Math.random() * 70; } }
+    const sp = g.speed * SPEED_K;
+    g.groundOff = (g.groundOff + sp * dt) % 40;
+    hillOff += sp * 0.15 * dt;
+    for (const c of clouds) { c.x -= 0.6 * dt; if (c.x < -80) { c.x = W + 60; c.y = cloudY(); } }
 
     // 狗的物理
     const shift = keys.ShiftLeft || keys.ShiftRight;
@@ -330,10 +390,10 @@
     const box = dogBox();
     for (const o of g.obs) {
       o.ph += 0.25 * dt;
-      if (o.type === 'bullet') o.x -= (g.speed + 5) * dt;
-      else if (o.scared && o.type === 'bird') { o.x -= (g.speed - 2) * dt; o.y -= 4 * dt; }
+      if (o.type === 'bullet') o.x -= (g.speed + 5) * SPEED_K * dt;
+      else if (o.scared && o.type === 'bird') { o.x -= (g.speed - 2) * SPEED_K * dt; o.y -= 4 * dt; }
       else if (o.scared && o.type === 'kid') { o.x += 3 * dt; }
-      else o.x -= g.speed * dt;
+      else o.x -= sp * dt;
 
       if (o.type === 'bullet' || o.type === 'trap') {
         const ox1 = o.x, ox2 = o.x + o.w, oy1 = o.y - (o.type === 'trap' ? o.h : 0), oy2 = o.type === 'trap' ? o.y : o.y + o.h;
@@ -353,8 +413,23 @@
   }
 
   // ---------- 繪圖 ----------
-  function drawBackground(groundOff, clouds) {
+  function drawBackground(groundOff) {
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    // 天空很高(直式)時加上太陽
+    if (GROUND > 400) {
+      ctx.fillStyle = '#fbe7a6';
+      ctx.beginPath(); ctx.arc(W - 80 - safe.r, Math.max(90, GROUND * 0.22), 34, 0, Math.PI * 2); ctx.fill();
+    }
+    // 遠方山丘
+    ctx.fillStyle = '#f1efe9';
+    ctx.beginPath(); ctx.moveTo(0, GROUND);
+    for (let x = 0; x <= W + 10; x += 10) {
+      const k = x + hillOff;
+      ctx.lineTo(x, GROUND - 40 - Math.sin(k / 90) * 18 - Math.sin(k / 37) * 8);
+    }
+    ctx.lineTo(W, GROUND); ctx.fill();
+    // 地面下的土地
+    ctx.fillStyle = '#f6f1e7'; ctx.fillRect(0, GROUND + 2, W, H - GROUND);
     ctx.fillStyle = '#e6e6e6';
     for (const c of clouds) {
       ctx.beginPath();
@@ -491,13 +566,15 @@
 
   function drawHUD() {
     ctx.save();
+    // 直式時把分數放在靠近遊戲區的位置,不要放在螢幕最頂端
+    const top = Math.max(28 + safe.t, GROUND - 320), left = 16 + safe.l, right = W - 16 - safe.r;
     ctx.font = 'bold 18px "Microsoft JhengHei", monospace';
     ctx.fillStyle = '#222'; ctx.textAlign = 'right';
-    ctx.fillText(`分數 ${String(g.score).padStart(5, '0')}`, W - 16, 28);
+    ctx.fillText(`分數 ${String(g.score).padStart(5, '0')}`, right, top);
     ctx.fillStyle = '#888';
-    ctx.fillText(`最高 ${String(Math.max(best, g.score)).padStart(5, '0')}`, W - 16, 50);
+    ctx.fillText(`最高 ${String(Math.max(best, g.score)).padStart(5, '0')}`, right, top + 22);
     ctx.textAlign = 'left'; ctx.fillStyle = '#222';
-    ctx.fillText(`🐕 ${dogName}`, 16, 28);
+    ctx.fillText(`🐕 ${dogName}`, left, top);
     ctx.restore();
     for (const p of g.pops) {
       ctx.save();
@@ -510,7 +587,7 @@
   }
 
   function renderGame() {
-    drawBackground(g.groundOff, g.clouds);
+    drawBackground(g.groundOff);
     for (const o of g.obs) {
       if (o.type === 'bird') drawBird(o);
       else if (o.type === 'kid') drawKid(o);
@@ -527,13 +604,13 @@
   let egg;
   function startEgg() {
     mode = 'egg';
-    egg = { t: 0, dogX: -100, carX: W + 260, flat: 0, honked: false, crashed: false, fading: false, clouds: [{ x: 200, y: 50 }, { x: 600, y: 70 }] };
+    egg = { t: 0, dogX: -100, carX: W + 260, flat: 0, honked: false, crashed: false, fading: false };
   }
 
   function updateEgg(dt) {
     const e = egg;
     e.t += dt;
-    if (e.t < 90) e.dogX = Math.min(380, e.dogX + 5 * dt);          // 狗走進來
+    if (e.t < 90) e.dogX = Math.min(W / 2 - 45, e.dogX + 5 * dt);   // 狗走進來
     if (e.t > 110 && !e.honked) { e.honked = true; sfx.horn(); }      // 喇叭
     if (e.t > 140) e.carX -= 22 * dt;                                 // 車衝過來
     if (!e.crashed && e.carX < e.dogX + 70) { e.crashed = true; sfx.crash(); }
@@ -565,7 +642,7 @@
 
   function renderEgg() {
     const e = egg;
-    drawBackground(0, e.clouds);
+    drawBackground(0);
     const walking = e.t < 90;
     drawDog(e.dogX, GROUND, { phase: walking ? e.t * 0.4 : 0, flat: e.flat, name: dogName, barking: !e.crashed && e.t > 100 && e.t < 130 });
     if (!e.crashed && e.t > 110) {
@@ -581,9 +658,9 @@
       if (e.carX < e.dogX - 150) {
         ctx.save(); ctx.textAlign = 'center';
         ctx.font = 'bold 30px "Microsoft JhengHei", sans-serif'; ctx.fillStyle = '#222';
-        ctx.fillText(`${dogName} 被車輾過去了……`, W / 2, 110);
+        ctx.fillText(`${dogName} 被車輾過去了……`, W / 2, GROUND - 140);
         ctx.font = '16px "Microsoft JhengHei", sans-serif'; ctx.fillStyle = '#888';
-        ctx.fillText('( 隱藏結局達成 )', W / 2, 140);
+        ctx.fillText('( 隱藏結局達成 )', W / 2, GROUND - 110);
         ctx.restore();
       }
     }
@@ -603,9 +680,12 @@
     if (mode === 'play') { update(dt); renderGame(); }
     else if (mode === 'over') renderGame();
     else if (mode === 'egg') { updateEgg(dt); renderEgg(); }
-    else if (mode === 'name') { drawBackground(0, [{ x: 200, y: 50 }, { x: 600, y: 70 }]); drawDog(DOG_X, GROUND); }
+    else if (mode === 'name') { drawBackground(0); drawDog(DOG_X, GROUND); }
     if (mode !== 'exit') requestAnimationFrame(loop);
   }
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 200));
   requestAnimationFrame(loop);
   nameInput.focus();
 })();
